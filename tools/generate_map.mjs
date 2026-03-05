@@ -196,6 +196,16 @@ svgEl.setAttribute("height", String(HEIGHT));
 svgEl.setAttribute("viewBox", `0 0 ${WIDTH} ${HEIGHT}`);
 document.body.appendChild(svgEl);
 
+// Add a solid background so viewers that default to transparent don't look blank.
+d3.select(svgEl)
+  .append("rect")
+  .attr("id", "bg")
+  .attr("x", 0)
+  .attr("y", 0)
+  .attr("width", WIDTH)
+  .attr("height", HEIGHT)
+  .attr("fill", "#0b1020");
+
 const defsEl = document.createElement("defs");
 svgEl.appendChild(defsEl);
 const deftemp = document.createElement("g");
