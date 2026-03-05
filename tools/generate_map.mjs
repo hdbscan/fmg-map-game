@@ -87,8 +87,103 @@ if (!document.fonts) document.fonts = { add() {} };
 
 // Provide polygonclip/lineclip used by clipPoly in utils.
 // FMG bundles these in public/libs/lineclip.min.js; for now a no-op clip is OK.
-window.polygonclip = (points) => points;
-window.lineclip = (line) => [line];
+// Provide polygonclip/lineclip used by clipPoly in utils.
+// Implemented inline (from FMG's public/libs/lineclip.min.js) to avoid eval quirks.
+{
+  function bitCode(p, bbox) {
+    let code = 0;
+    if (p[0] < bbox[0]) code |= 1;
+    else if (p[0] > bbox[2]) code |= 2;
+    if (p[1] < bbox[1]) code |= 4;
+    else if (p[1] > bbox[3]) code |= 8;
+    return code;
+  }
+
+  function intersect(a, b, edge, bbox) {
+    return edge & 8
+      ? [a[0] + (b[0] - a[0]) * (bbox[3] - a[1]) / (b[1] - a[1]), bbox[3]]
+      : edge & 4
+        ? [a[0] + (b[0] - a[0]) * (bbox[1] - a[1]) / (b[1] - a[1]), bbox[1]]
+        : edge & 2
+          ? [bbox[2], a[1] + (b[1] - a[1]) * (bbox[2] - a[0]) / (b[0] - a[0])]
+          : edge & 1
+            ? [bbox[0], a[1] + (b[1] - a[1]) * (bbox[0] - a[0]) / (b[0] - a[0])]
+            : null;
+  }
+
+  window.lineclip = function lineclip(points, bbox, result) {
+    let codeA = bitCode(points[0], bbox);
+    const out = [];
+    result = result || [];
+
+    for (let i = 1; i < points.length; i++) {
+      let a = points[i - 1];
+      let b = points[i];
+      let codeB = bitCode(b, bbox);
+      let lastCodeB = codeB;
+
+      while (true) {
+        if (!(codeA | codeB)) {
+          out.push(a);
+          if (codeB !== lastCodeB) {
+            out.push(b);
+            if (i < points.length - 1) {
+              result.push(out);
+              out.length = 0;
+            }
+          } else if (i === points.length - 1) out.push(b);
+          break;
+        }
+        if (codeA & codeB) break;
+        if (codeA) {
+          a = intersect(a, b, codeA, bbox);
+          codeA = bitCode(a, bbox);
+        } else {
+          b = intersect(a, b, codeB, bbox);
+          codeB = bitCode(b, bbox);
+        }
+      }
+
+      codeA = lastCodeB;
+    }
+
+    if (out.length) result.push(out);
+    return result;
+  };
+
+  window.polygonclip = function polygonclip(points, bbox, secure = 0) {
+    let result;
+    let edge = 1;
+
+    for (; edge <= 8; edge *= 2) {
+      result = [];
+      let prev = points[points.length - 1];
+      let prevInside = !(bitCode(prev, bbox) & edge);
+
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        const inside = !(bitCode(p, bbox) & edge);
+        const crossing = inside !== prevInside;
+        const inter = intersect(prev, p, edge, bbox);
+
+        if (crossing && inter) {
+          result.push(inter);
+          if (secure) result.push(inter, inter);
+        }
+        if (inside) result.push(p);
+
+        prev = p;
+        prevInside = inside;
+      }
+
+      points = result;
+      if (!points.length) break;
+    }
+
+    return result;
+  };
+}
+
 
 // ---- Create minimal SVG + layer selections expected by renderers ----
 // Create <svg id="map"><defs><g id="deftemp">...</g></defs><g id="viewbox"/>
@@ -162,7 +257,15 @@ globalThis.graphHeight = HEIGHT;
 
 // Fallback simplify (FMG browser uses simplify.js). Start with no-op.
 // It’s enough to get a valid SVG; we can optimize later.
-globalThis.simplify = (pts) => pts;
+// Load FMG bundled simplify implementation from public/libs/simplify.js
+{
+  const p = new URL("./fmg/public/libs/simplify.js", import.meta.url);
+  const js = await Bun.file(p).text();
+  (0, eval)(js);
+  // simplify is now a global function
+  globalThis.simplify = globalThis.simplify || ((pts) => pts);
+}
+
 
 // Color helpers normally set up by FMG main.js
 // Provide minimal implementations for drawHeightmap.
