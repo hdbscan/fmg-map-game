@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "linkedom": "^0.18.12"
+    "linkedom": "^0.18.12",
+    "d3": "^7.9.0",
+    "delaunator": "^5.0.1",
+    "alea": "^1.0.1",
+    "polylabel": "^2.0.1"
   }
 }
