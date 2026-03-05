@@ -248,6 +248,9 @@ const oceanHeights = globalThis.terrs.append("g").attr("id", "oceanHeights");
 const landHeights = globalThis.terrs.append("g").attr("id", "landHeights");
 // render options for drawHeightmap
 oceanHeights.attr("data-render", "0");
+// FMG default
+landHeights.attr("scheme", "bright");
+oceanHeights.attr("scheme", "bright");
 landHeights.attr("skip", "0").attr("relax", "0");
 
 // groups for features renderer
@@ -278,16 +281,32 @@ globalThis.graphHeight = HEIGHT;
 
 
 // Color helpers normally set up by FMG main.js
-// Provide minimal implementations for drawHeightmap.
-globalThis.getColorScheme = (_scheme) => {
-  return (t) => {
-    // t is 0..100
-    const v = Math.max(0, Math.min(255, Math.round((t / 100) * 255)));
-    const hex = v.toString(16).padStart(2, "0");
-    return `#${hex}${hex}${hex}`;
-  };
+// Re-implement FMG's heightmap color schemes + getColorScheme/getColor (headless, no UI DOM).
+// Source reference: FMG `public/modules/ui/style.js`
+const heightmapColorSchemes = {
+  bright: d3.scaleSequential(d3.interpolateSpectral),
+  light: d3.scaleSequential(d3.interpolateRdYlGn),
+  natural: d3.scaleSequential(d3.interpolateRgbBasis(["white", "#EEEECC", "tan", "green", "teal"])),
+  green: d3.scaleSequential(d3.interpolateGreens),
+  olive: d3.scaleSequential(d3.interpolateRgbBasis(["#ffffff", "#cea48d", "#d5b085", "#0c2c19", "#151320"])),
+  livid: d3.scaleSequential(d3.interpolateRgbBasis(["#BBBBDD", "#2A3440", "#17343B", "#0A1E24"])),
+  monochrome: d3.scaleSequential(d3.interpolateGreys),
 };
-globalThis.getColor = (height, scheme) => scheme(height);
+
+globalThis.getColorScheme = (scheme = "bright") => {
+  if (!(scheme in heightmapColorSchemes)) {
+    // FMG supports custom schemes as comma-separated color stops
+    const stops = String(scheme).split(",");
+    heightmapColorSchemes[scheme] = d3.scaleSequential(d3.interpolateRgbBasis(stops));
+  }
+  return heightmapColorSchemes[scheme];
+};
+
+globalThis.getColor = (value, scheme = globalThis.getColorScheme("bright")) => {
+  // FMG tweak: shallow water adjustment
+  const v = value < 20 ? value - 5 : value;
+  return scheme(1 - v / 100);
+};
 
 // ---- Load heightmap templates (browser file) into globalThis.heightmapTemplates ----
 {
