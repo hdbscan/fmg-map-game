@@ -343,6 +343,30 @@ window.Features.markupPack();
 window.drawHeightmap();
 window.drawFeatures();
 
+// Godot's SVG rasterizer is limited and often doesn't support <use href="#...">.
+// Flatten <use> elements by inlining referenced paths.
+{
+  const uses = Array.from(svgEl.querySelectorAll("use"));
+  for (const u of uses) {
+    const href = u.getAttribute("href") || u.getAttribute("xlink:href");
+    if (!href || !href.startsWith("#")) continue;
+    const id = href.slice(1);
+    // CSS.escape is not available in this headless env; ids here are simple (feature_123)
+    const ref = svgEl.querySelector(`#${id}`);
+    if (!ref) continue;
+
+    // Clone referenced element and merge attributes from <use>
+    const clone = ref.cloneNode(true);
+    // drop id to avoid duplicates
+    clone.removeAttribute("id");
+    for (const attr of u.getAttributeNames()) {
+      if (attr === "href" || attr === "xlink:href") continue;
+      clone.setAttribute(attr, u.getAttribute(attr));
+    }
+    u.replaceWith(clone);
+  }
+}
+
 // Metadata
 // add a tiny label
 globalThis.svg
