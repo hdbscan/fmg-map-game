@@ -38,9 +38,19 @@ func _zoom(factor: float) -> void:
 
 func _on_generate_pressed() -> void:
 	status.text = "Generating..."
-	# Placeholder generator: writes a simple SVG with random colors.
-	# Next: replace this with bun+linkedom+FMG headless export.
-	_generate_placeholder_svg()
+		status.text = "Generating..."
+	var bun := OS.get_environment("BUN")
+	if bun == "":
+		bun = "bun"
+	var script := ProjectSettings.globalize_path("res://../tools/generate_map.mjs")
+	var out := ProjectSettings.globalize_path("res://generated/latest.svg")
+	var args := PackedStringArray([script, "--out", out])
+	var pid := OS.create_process(bun, args, false)
+	if pid == -1:
+		status.text = "Failed to spawn bun"
+		return
+	# naive wait loop
+	await get_tree().create_timer(0.2).timeout
 	_load_svg()
 	status.text = "Ready"
 

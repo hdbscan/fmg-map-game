@@ -1,3 +1,6 @@
 [submodule "godot/addons/svgtexture2d"]
 	path = godot/addons/svgtexture2d
 	url = https://github.com/merovi-labs/svgtexture2d.git
+[submodule "tools/fmg"]
+	path = tools/fmg
+	url = https://github.com/Azgaar/Fantasy-Map-Generator.git
