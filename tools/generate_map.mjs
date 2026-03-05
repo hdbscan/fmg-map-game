@@ -1,51 +1,246 @@
 #!/usr/bin/env bun
-// Headless-ish FMG SVG generator (WIP): boot a lightweight DOM (linkedom) and import FMG modules.
-// Next step will call the actual generation pipeline and renderers.
+// Headless-ish FMG SVG generator using linkedom DOM shim.
+// Goal: generate an FMG-style map SVG and write it to disk for Godot to display.
 
-import { parseHTML } from 'linkedom';
+import { parseHTML } from "linkedom";
+import * as d3 from "d3";
+import Alea from "alea";
+import { generateGrid } from "./fmg/src/utils/graphUtils.ts";
 
-const OUT = process.argv.includes('--out')
-  ? process.argv[process.argv.indexOf('--out') + 1]
-  : new URL('../godot/generated/latest.svg', import.meta.url).pathname;
+const OUT = process.argv.includes("--out")
+  ? process.argv[process.argv.indexOf("--out") + 1]
+  : new URL("../godot/generated/latest.svg", import.meta.url).pathname;
 
-const { window, document, Node, Event, CustomEvent, Element } = parseHTML('<!doctype html><html><body></body></html>');
+const WIDTH = Number(process.env.FMG_WIDTH ?? "2000");
+const HEIGHT = Number(process.env.FMG_HEIGHT ?? "1200");
+const SEED = process.env.FMG_SEED ?? String(Math.floor(Math.random() * 1e9));
 
-// globals expected by FMG
+const { window, document, Node, Event, CustomEvent, Element } = parseHTML(
+  "<!doctype html><html><body></body></html>",
+);
+
+// ---- globals expected by FMG ----
 globalThis.window = window;
 globalThis.document = document;
 globalThis.Node = Node;
 globalThis.Event = Event;
 globalThis.CustomEvent = CustomEvent;
-globalThis.navigator = { userAgent: 'bun-fmg-headless' };
+globalThis.navigator = { userAgent: "bun-fmg-headless" };
 
+// FMG debug flags used across modules
+// Keep them defined to avoid ReferenceError.
+globalThis.PRODUCTION = false;
+globalThis.DEBUG = {};
+globalThis.INFO = false;
+globalThis.TIME = false;
+globalThis.WARN = false;
+globalThis.ERROR = true;
+
+// d3 is used as a global in parts of FMG (e.g. old main.js); safe to expose.
+globalThis.d3 = d3;
+
+// timers
 globalThis.requestAnimationFrame = (cb) => setTimeout(() => cb(Date.now()), 0);
 globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
 
-Object.defineProperty(Element.prototype, 'innerText', {
-  get() { return this.textContent; },
-  set(v) { this.textContent = String(v); },
+// linkedom innerText setter shim
+Object.defineProperty(Element.prototype, "innerText", {
+  get() {
+    return this.textContent;
+  },
+  set(v) {
+    this.textContent = String(v);
+  },
   configurable: true,
 });
 
-// stubs required by fonts module
-const styleSelectFont = document.createElement('select');
-styleSelectFont.id = 'styleSelectFont';
+// ---- DOM stubs required by some modules ----
+function addInput(id, value = "") {
+  const el = document.createElement("input");
+  el.setAttribute("id", id);
+  el.value = value;
+  document.body.appendChild(el);
+  return el;
+}
+
+const styleSelectFont = document.createElement("select");
+styleSelectFont.id = "styleSelectFont";
 document.body.appendChild(styleSelectFont);
-class FontFaceStub { constructor(){} load(){ return Promise.resolve(this); } }
+
+// Grid generator expects pointsInput.dataset.cells
+{
+  const el = addInput("pointsInput", "");
+  el.dataset.cells = String(process.env.FMG_CELLS ?? "10000");
+}
+
+// HeightmapGenerator expects a template id here
+addInput("templateInput", process.env.FMG_TEMPLATE ?? "pangea");
+
+class FontFaceStub {
+  constructor() {}
+  load() {
+    return Promise.resolve(this);
+  }
+}
 globalThis.FontFace = FontFaceStub;
-if (!document.fonts) document.fonts = { add(){} };
+if (!document.fonts) document.fonts = { add() {} };
 
-// Import FMG TS modules directly from the submodule.
-// NOTE: This just proves loading works. Real generation comes next.
-await import('../tools/fmg/src/utils/index.ts');
-await import('../tools/fmg/src/modules/index.ts');
-await import('../tools/fmg/src/renderers/index.ts');
+// Provide polygonclip/lineclip used by clipPoly in utils.
+// FMG bundles these in public/libs/lineclip.min.js; for now a no-op clip is OK.
+window.polygonclip = (points) => points;
+window.lineclip = (line) => [line];
 
-// Placeholder output so pipeline is end-to-end
-const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="1200" viewBox="0 0 2000 1200">
-  <rect width="2000" height="1200" fill="#0f172a"/>
-  <text x="40" y="80" font-size="56" fill="#e2e8f0">FMG generator loaded (next: actual map generation)</text>
-</svg>`;
+// ---- Create minimal SVG + layer selections expected by renderers ----
+// Create <svg id="map"><defs><g id="deftemp">...</g></defs><g id="viewbox"/>
+const svgEl = document.createElement("svg");
+svgEl.setAttribute("id", "map");
+svgEl.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+svgEl.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+svgEl.setAttribute("width", String(WIDTH));
+svgEl.setAttribute("height", String(HEIGHT));
+svgEl.setAttribute("viewBox", `0 0 ${WIDTH} ${HEIGHT}`);
+document.body.appendChild(svgEl);
 
-await Bun.write(OUT, svg);
+const defsEl = document.createElement("defs");
+svgEl.appendChild(defsEl);
+const deftemp = document.createElement("g");
+deftemp.setAttribute("id", "deftemp");
+// groups used by drawFeatures
+for (const id of ["featurePaths", "textPaths", "statePaths", "defs-emblems"]) {
+  const g = document.createElement("g");
+  g.setAttribute("id", id);
+  deftemp.appendChild(g);
+}
+const landMask = document.createElement("mask");
+landMask.setAttribute("id", "land");
+deftemp.appendChild(landMask);
+const waterMask = document.createElement("mask");
+waterMask.setAttribute("id", "water");
+deftemp.appendChild(waterMask);
+defsEl.appendChild(deftemp);
+
+const viewboxEl = document.createElement("g");
+viewboxEl.setAttribute("id", "viewbox");
+svgEl.appendChild(viewboxEl);
+
+const scaleBarEl = document.createElement("g");
+scaleBarEl.setAttribute("id", "scaleBar");
+const scaleBarBack = document.createElement("rect");
+scaleBarBack.setAttribute("id", "scaleBarBack");
+scaleBarEl.appendChild(scaleBarBack);
+svgEl.appendChild(scaleBarEl);
+
+// d3 selections (global variables used by renderers)
+globalThis.svg = d3.select(svgEl);
+globalThis.defs = globalThis.svg.select("#deftemp");
+globalThis.viewbox = globalThis.svg.select("#viewbox");
+globalThis.scaleBar = globalThis.svg.select("#scaleBar");
+
+// Minimal set of groups used by the TS renderers we call
+// (we’re not trying to replicate the whole UI.)
+globalThis.terrs = globalThis.viewbox.append("g").attr("id", "terrs");
+const oceanHeights = globalThis.terrs.append("g").attr("id", "oceanHeights");
+const landHeights = globalThis.terrs.append("g").attr("id", "landHeights");
+// render options for drawHeightmap
+oceanHeights.attr("data-render", "0");
+landHeights.attr("skip", "0").attr("relax", "0");
+
+// groups for features renderer
+globalThis.lakes = globalThis.viewbox.append("g").attr("id", "lakes");
+for (const id of ["freshwater", "salt", "sinkhole", "frozen", "lava", "dry"]) {
+  globalThis.lakes.append("g").attr("id", id);
+}
+
+globalThis.coastline = globalThis.viewbox.append("g").attr("id", "coastline");
+for (const id of ["sea_island", "lake_island"]) {
+  globalThis.coastline.append("g").attr("id", id);
+}
+
+// graph dims expected by some functions
+globalThis.graphWidth = WIDTH;
+globalThis.graphHeight = HEIGHT;
+
+// Fallback simplify (FMG browser uses simplify.js). Start with no-op.
+// It’s enough to get a valid SVG; we can optimize later.
+globalThis.simplify = (pts) => pts;
+
+// Color helpers normally set up by FMG main.js
+// Provide minimal implementations for drawHeightmap.
+globalThis.getColorScheme = (_scheme) => {
+  return (t) => {
+    // t is 0..100
+    const v = Math.max(0, Math.min(255, Math.round((t / 100) * 255)));
+    const hex = v.toString(16).padStart(2, "0");
+    return `#${hex}${hex}${hex}`;
+  };
+};
+globalThis.getColor = (height, scheme) => scheme(height);
+
+// ---- Load heightmap templates (browser file) into globalThis.heightmapTemplates ----
+{
+  const p = new URL("./fmg/public/config/heightmap-templates.js", import.meta.url);
+  let js = await Bun.file(p).text();
+  // Rewrite top-level const binding into a global assignment.
+  js = js.replace("const heightmapTemplates =", "globalThis.heightmapTemplates =");
+  // Execute in the current global scope.
+  (0, eval)(js);
+}
+
+// ---- Import FMG code (TS modules) ----
+await import("./fmg/src/utils/index.ts");
+await import("./fmg/src/modules/index.ts");
+await import("./fmg/src/renderers/index.ts");
+
+// Make window.* helpers accessible as real globals for renderers that call
+// connectVertices(...) instead of window.connectVertices(...)
+for (const k of Object.keys(window)) {
+  if (!(k in globalThis)) globalThis[k] = window[k];
+}
+
+// ---- Generate map (minimal pipeline) ----
+// Seed
+// Many modules read `seed` global.
+globalThis.seed = SEED;
+Math.random = Alea(SEED);
+
+// Grid
+// Many modules read `grid` global.
+globalThis.grid = generateGrid(SEED, WIDTH, HEIGHT);
+
+// Heightmap
+// HeightmapGenerator is attached to window by module init.
+// It returns an array assigned to grid.cells.h.
+globalThis.grid.cells.h = await window.HeightmapGenerator.generate(globalThis.grid);
+
+// Pack: for now, use grid as pack (avoid main.js reGraph complexity)
+// Enough for Features.markupPack + drawHeightmap/drawFeatures.
+globalThis.pack = {
+  cells: globalThis.grid.cells,
+  vertices: globalThis.grid.vertices,
+};
+// Some algorithms assume pack.cells.p exists (points per cell)
+if (!globalThis.pack.cells.p) globalThis.pack.cells.p = globalThis.grid.points;
+
+// Feature markup
+window.Features.markupGrid();
+window.Features.markupPack();
+
+// ---- Render (SVG) ----
+// Height contours + land/water feature paths
+window.drawHeightmap();
+window.drawFeatures();
+
+// Metadata
+// add a tiny label
+globalThis.svg
+  .append("text")
+  .attr("x", 20)
+  .attr("y", 50)
+  .attr("fill", "#e2e8f0")
+  .attr("font-size", 32)
+  .text(`seed: ${SEED}`);
+
+// Write SVG
+const outSvg = svgEl.outerHTML;
+await Bun.write(OUT, outSvg);
 console.log(`Wrote: ${OUT}`);
